@@ -64,7 +64,15 @@ def cmd_start(session_id: str, buyin_amount: int) -> str:
     if buyin_amount <= 0:
         return "Buy-in amount must be a positive number."
     games[session_id] = HoldemGame(buyin_amount)
-    return f"Game started! Buy-in unit: {buyin_amount} chips.\nCommands:\n  buy / buy*N — buy in (N times)\n  checkout <chips> — cash out\n  result — show final results\n  reset — restart game"
+    return (
+        f"🃏 Game started!\n"
+        f"Buy-in unit: {buyin_amount} chips\n"
+        f"\n"
+        f"buy / buy*N — buy in\n"
+        f"checkout <chips> — cash out\n"
+        f"result — final results\n"
+        f"help — all commands"
+    )
 
 
 def cmd_buyin(
@@ -96,8 +104,9 @@ def cmd_buyin(
     player.buyins += times
     total_invested = player.buyins * game.buyin_amount
     return (
-        f"{display_name} bought in x{times} "
-        f"(total: {player.buyins}x = {total_invested} chips){actor_note}"
+        f"✅ {display_name} bought in x{times}\n"
+        f"  Total: {player.buyins}x = {total_invested} chips"
+        + (f"\n  {actor_note.strip()}" if actor_note else "")
     )
 
 
@@ -139,23 +148,32 @@ def cmd_checkout(
     total_players = len(game.players)
     remaining = total_players - checked_out_count
 
-    msg = f"{display_name} checked out: {chips} chips (invested {invested}, {sign}{delta}){actor_note}"
+    lines = [
+        f"✅ {display_name} checked out",
+        f"  Chips: {chips}",
+        f"  Invested: {invested}",
+        f"  Result: {sign}{delta} chips",
+    ]
+    if actor_note:
+        lines.append(f"  {actor_note.strip()}")
+
     if remaining > 0:
-        msg += f"\nWaiting for {remaining} more player(s) to check out."
+        lines.append(f"\n⏳ Waiting for {remaining} more player(s)")
     else:
-        # All checked out — auto-validate
         total_in = game.total_bought_in()
         total_out = game.total_checked_out()
         if total_in == total_out:
-            msg += "\nAll players checked out! Type 'result' to see final results."
+            lines.append("\n🎉 All checked out! Type 'result' for final results.")
         else:
             diff = total_out - total_in
-            msg += (
-                f"\nAll checked out, but totals don't match!\n"
-                f"Total bought in: {total_in}  |  Total cashed out: {total_out}  |  Diff: {diff:+}\n"
-                f"Please recheck chip counts."
+            lines.append(
+                f"\n⚠️ Totals don't match!\n"
+                f"  Bought in: {total_in}\n"
+                f"  Cashed out: {total_out}\n"
+                f"  Diff: {diff:+}\n"
+                f"  Please recheck chip counts."
             )
-    return msg
+    return "\n".join(lines)
 
 
 def cmd_result(session_id: str) -> str:
@@ -178,7 +196,7 @@ def cmd_result(session_id: str) -> str:
             f"Please correct chip counts with 'checkout <chips>' again."
         )
 
-    lines = ["=== Final Results ===", f"Buy-in unit: {game.buyin_amount} chips\n"]
+    lines = ["🏆 Final Results", f"Buy-in unit: {game.buyin_amount} chips"]
     sorted_players = sorted(
         game.players.values(),
         key=lambda p: (p.checkout_chips or 0) - p.buyins * game.buyin_amount,
@@ -188,10 +206,10 @@ def cmd_result(session_id: str) -> str:
         invested = player.buyins * game.buyin_amount
         delta = (player.checkout_chips or 0) - invested
         sign = "+" if delta >= 0 else ""
-        bar = "#" * abs(delta // game.buyin_amount) if game.buyin_amount > 0 else ""
-        lines.append(
-            f"{player.name}: {sign}{delta} chips  (in: {invested} / out: {player.checkout_chips})"
-        )
+        medal = "🥇" if delta == max((p.checkout_chips or 0) - p.buyins * game.buyin_amount for p in sorted_players) else ""
+        lines.append(f"\n{medal}{player.name}")
+        lines.append(f"  In: {invested}  Out: {player.checkout_chips}")
+        lines.append(f"  {sign}{delta} chips")
 
     lines.append(f"\nTotal pot: {total_in} chips")
     return "\n".join(lines)
@@ -252,8 +270,11 @@ def cmd_revise(
     delta = chips - invested
     sign = "+" if delta >= 0 else ""
     return (
-        f"{display_name} checkout revised: {old} → {chips} chips "
-        f"(invested {invested}, {sign}{delta}){actor_note}"
+        f"✏️ {display_name} checkout revised\n"
+        f"  {old} → {chips} chips\n"
+        f"  Invested: {invested}\n"
+        f"  Result: {sign}{delta} chips"
+        + (f"\n  {actor_note.strip()}" if actor_note else "")
     )
 
 
