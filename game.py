@@ -204,12 +204,19 @@ def cmd_status(session_id: str) -> str:
     if not game.players:
         return f"Game active. Buy-in unit: {game.buyin_amount}. No players yet."
 
-    lines = [f"=== Game Status === (buy-in: {game.buyin_amount})"]
+    lines = [f"=== Game Status ===", f"Buy-in unit: {game.buyin_amount} chips"]
     for player in game.players.values():
         invested = player.buyins * game.buyin_amount
-        status = f"checked out: {player.checkout_chips}" if player.checkout_chips is not None else "in game"
-        lines.append(f"  {player.name}: {player.buyins}x buy-in ({invested} chips) — {status}")
-    lines.append(f"Total pot: {game.total_bought_in()} chips")
+        if player.checkout_chips is not None:
+            delta = player.checkout_chips - invested
+            sign = "+" if delta >= 0 else ""
+            status = f"Cashed out: {player.checkout_chips} chips ({sign}{delta})"
+        else:
+            status = "In game"
+        lines.append(f"\n{player.name}")
+        lines.append(f"  {player.buyins}x buy-in ({invested} chips)")
+        lines.append(f"  {status}")
+    lines.append(f"\nTotal pot: {game.total_bought_in()} chips")
     return "\n".join(lines)
 
 
