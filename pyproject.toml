@@ -1,0 +1,10 @@
+[project]
+name = "holdem-helper"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "flask>=3.0",
+    "line-bot-sdk>=3.0",
+]
