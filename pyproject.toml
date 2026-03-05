@@ -6,5 +6,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "flask>=3.0",
+    "gunicorn>=22.0",
     "line-bot-sdk>=3.0",
 ]
