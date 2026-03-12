@@ -106,9 +106,21 @@ def handle_text(session_id: str, user_id: str, user_name: str, text: str) -> str
     if cmd in ("status", "info"):
         return g.cmd_status(session_id)
 
+    # remove <name>
+    if cmd in ("remove", "delete", "del"):
+        if not args:
+            return "Usage: remove <name>"
+        return g.cmd_remove(session_id, " ".join(args))
+
     # reset
     if cmd in ("reset", "restart", "newgame"):
         return g.cmd_reset(session_id)
+
+    # name <display name>
+    if cmd in ("name", "setname", "myname"):
+        if not args:
+            return "Usage: name <your display name>"
+        return g.cmd_setname(user_id, " ".join(args))
 
     # help
     if cmd in ("help", "?"):
@@ -146,8 +158,14 @@ def handle_text(session_id: str, user_id: str, user_name: str, text: str) -> str
             "▸ status\n"
             "  Show current game state\n"
             "\n"
+            "▸ remove <name>\n"
+            "  Remove a player (undo wrong buy-in)\n"
+            "\n"
             "▸ reset\n"
-            "  Clear game and start fresh"
+            "  Clear game and start fresh\n"
+            "\n"
+            "▸ name <your name>\n"
+            "  Set your display name (if LINE name unreadable)"
         )
 
     return ""  # ignore unknown messages silently
@@ -189,6 +207,7 @@ def on_message(event: MessageEvent):
     text = event.message.text
 
     # Fetch display name
+    name_unavailable = False
     try:
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
@@ -196,13 +215,24 @@ def on_message(event: MessageEvent):
             user_name = profile.display_name
     except Exception as e:
         logger.warning("Could not fetch profile for %s: %s", user_id, e)
-        user_name = user_id  # fallback
+        stored = g.get_stored_name(user_id)
+        if stored:
+            user_name = stored
+        else:
+            user_name = user_id
+            name_unavailable = True
 
     logger.info("session=%s user=%s text=%r", session_id, user_name, text)
     reply = handle_text(session_id, user_id, user_name, text)
     if not reply:
         logger.debug("No reply generated for text=%r — ignoring", text)
         return  # ignore unrecognised messages
+
+    if name_unavailable and parse_command(text)[0] not in ("name", "setname", "myname"):
+        reply += (
+            "\n\nℹ️ Your LINE name couldn't be read. Set a display name with:\n"
+            "name <your name>"
+        )
 
     logger.info("Replying: %r", reply)
     try:

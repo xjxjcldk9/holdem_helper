@@ -1,5 +1,52 @@
+import json
+import os
+import sqlite3
 from dataclasses import dataclass, field
 from typing import Optional
+
+DB_PATH = os.environ.get("DB_PATH", "holdem.db")
+
+
+def _get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS games (
+            session_id   TEXT PRIMARY KEY,
+            buyin_amount INTEGER NOT NULL,
+            players_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS user_names (
+            user_id TEXT PRIMARY KEY,
+            name    TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    return conn
+
+
+def get_stored_name(user_id: str) -> Optional[str]:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT name FROM user_names WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def cmd_setname(user_id: str, name: str) -> str:
+    name = name.strip()
+    if not name:
+        return "Usage: name <your display name>"
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_names (user_id, name) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET name = excluded.name
+            """,
+            (user_id, name),
+        )
+    return f"✅ Display name set to: {name}"
 
 
 @dataclass
@@ -35,13 +82,47 @@ class HoldemGame:
         return self.total_bought_in() == self.total_checked_out()
 
 
-# In-memory store: group/user_id -> HoldemGame
-# For group chats, key is group_id; for 1-on-1, key is user_id
-games: dict[str, HoldemGame] = {}
+def _load_game(session_id: str) -> Optional[HoldemGame]:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT buyin_amount, players_json FROM games WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    game = HoldemGame(buyin_amount=row[0])
+    raw = json.loads(row[1])
+    for pid, data in raw.items():
+        game.players[pid] = Player(
+            name=data["name"],
+            buyins=data["buyins"],
+            checkout_chips=data.get("checkout_chips"),
+        )
+    return game
 
 
-def _get_game(session_id: str) -> Optional[HoldemGame]:
-    return games.get(session_id)
+def _save_game(session_id: str, game: HoldemGame) -> None:
+    players_json = json.dumps(
+        {
+            pid: {
+                "name": p.name,
+                "buyins": p.buyins,
+                "checkout_chips": p.checkout_chips,
+            }
+            for pid, p in game.players.items()
+        }
+    )
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO games (session_id, buyin_amount, players_json)
+            VALUES (?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                buyin_amount = excluded.buyin_amount,
+                players_json = excluded.players_json
+            """,
+            (session_id, game.buyin_amount, players_json),
+        )
 
 
 def _resolve_player(game: HoldemGame, target_name: str) -> tuple[str, str]:
@@ -63,7 +144,8 @@ def _resolve_player(game: HoldemGame, target_name: str) -> tuple[str, str]:
 def cmd_start(session_id: str, buyin_amount: int) -> str:
     if buyin_amount <= 0:
         return "Buy-in amount must be a positive number."
-    games[session_id] = HoldemGame(buyin_amount)
+    game = HoldemGame(buyin_amount)
+    _save_game(session_id, game)
     return (
         f"🃏 Game started!\n"
         f"Buy-in unit: {buyin_amount} chips\n"
@@ -82,7 +164,7 @@ def cmd_buyin(
     times: int = 1,
     target_name: Optional[str] = None,
 ) -> str:
-    game = _get_game(session_id)
+    game = _load_game(session_id)
     if game is None:
         return "No game running. Start one with: start <amount>"
     if times <= 0:
@@ -103,6 +185,7 @@ def cmd_buyin(
 
     player.buyins += times
     total_invested = player.buyins * game.buyin_amount
+    _save_game(session_id, game)
     return (
         f"✅ {display_name} bought in x{times}\n"
         f"  Total: {player.buyins}x = {total_invested} chips"
@@ -117,7 +200,7 @@ def cmd_checkout(
     chips: int,
     target_name: Optional[str] = None,
 ) -> str:
-    game = _get_game(session_id)
+    game = _load_game(session_id)
     if game is None:
         return "No game running. Start one with: start <amount>"
     if chips < 0:
@@ -173,11 +256,13 @@ def cmd_checkout(
                 f"  Diff: {diff:+}\n"
                 f"  Please recheck chip counts."
             )
+
+    _save_game(session_id, game)
     return "\n".join(lines)
 
 
 def cmd_result(session_id: str) -> str:
-    game = _get_game(session_id)
+    game = _load_game(session_id)
     if game is None:
         return "No game running."
     if not game.players:
@@ -216,7 +301,7 @@ def cmd_result(session_id: str) -> str:
 
 
 def cmd_status(session_id: str) -> str:
-    game = _get_game(session_id)
+    game = _load_game(session_id)
     if game is None:
         return "No game running."
     if not game.players:
@@ -245,7 +330,7 @@ def cmd_revise(
     chips: int,
     target_name: Optional[str] = None,
 ) -> str:
-    game = _get_game(session_id)
+    game = _load_game(session_id)
     if game is None:
         return "No game running."
     if chips < 0:
@@ -269,6 +354,7 @@ def cmd_revise(
     invested = player.buyins * game.buyin_amount
     delta = chips - invested
     sign = "+" if delta >= 0 else ""
+    _save_game(session_id, game)
     return (
         f"✏️ {display_name} checkout revised\n"
         f"  {old} → {chips} chips\n"
@@ -278,7 +364,31 @@ def cmd_revise(
     )
 
 
+def cmd_remove(session_id: str, target_name: str) -> str:
+    game = _load_game(session_id)
+    if game is None:
+        return "No game running."
+
+    needle = target_name.strip().lower()
+    found_pid = None
+    for pid, player in game.players.items():
+        if player.name.lower() == needle:
+            found_pid = pid
+            break
+
+    if found_pid is None:
+        return f"No player named '{target_name}' found."
+
+    removed = game.players.pop(found_pid)
+    _save_game(session_id, game)
+    invested = removed.buyins * game.buyin_amount
+    return (
+        f"🗑️ {removed.name} removed\n"
+        f"  ({removed.buyins}x buy-in, {invested} chips deducted from pot)"
+    )
+
+
 def cmd_reset(session_id: str) -> str:
-    if session_id in games:
-        del games[session_id]
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM games WHERE session_id = ?", (session_id,))
     return "Game reset. Start a new game with: start <amount>"

@@ -20,13 +20,18 @@ Required environment variables:
 ```bash
 export LINE_CHANNEL_SECRET=...
 export LINE_CHANNEL_ACCESS_TOKEN=...
+export DB_PATH=/data/holdem.db   # optional; defaults to holdem.db in cwd
 ```
+
+### Railway deployment note
+
+Game state is persisted in SQLite. On Railway, add a **Volume** mounted at `/data` and set `DB_PATH=/data/holdem.db` so the database survives redeploys. Without a volume the file lives in the ephemeral container and is lost on restart.
 
 ## Architecture
 
 Two files, clean separation:
 
-- **`game.py`** — pure game logic, no I/O. Holds in-memory state (`games: dict[str, HoldemGame]`) keyed by LINE session ID (group_id > room_id > user_id). All state lives in the process — no database.
+- **`game.py`** — game logic + SQLite persistence. State is stored in `holdem.db` (path overridable via `DB_PATH`). Each command loads the game from SQLite, mutates it, then saves back. Schema: single `games` table with `session_id`, `buyin_amount`, and `players_json` (JSON blob). Session ID is group_id > room_id > user_id.
 - **`main.py`** — Flask webhook server + LINE Messaging API v3 integration. Parses raw text into commands, calls `game.py` functions, sends reply.
 
 ### Game state model
