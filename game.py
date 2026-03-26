@@ -14,14 +14,29 @@ def _get_conn() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS games (
             session_id   TEXT PRIMARY KEY,
             buyin_amount INTEGER NOT NULL,
-            players_json TEXT NOT NULL DEFAULT '{}'
+            players_json TEXT NOT NULL DEFAULT '{}',
+            game_name    TEXT,
+            created_at   TEXT DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS user_names (
             user_id TEXT PRIMARY KEY,
             name    TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS regular_players (
+            name TEXT PRIMARY KEY
+        );
         """
     )
+    # Migrate older schemas
+    for col, definition in [
+        ("game_name", "TEXT"),
+        ("created_at", "TEXT DEFAULT (datetime('now'))"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE games ADD COLUMN {col} {definition}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     return conn
 
@@ -101,7 +116,7 @@ def _load_game(session_id: str) -> Optional[HoldemGame]:
     return game
 
 
-def _save_game(session_id: str, game: HoldemGame) -> None:
+def _save_game(session_id: str, game: HoldemGame, game_name: Optional[str] = None) -> None:
     players_json = json.dumps(
         {
             pid: {
@@ -115,13 +130,14 @@ def _save_game(session_id: str, game: HoldemGame) -> None:
     with _get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO games (session_id, buyin_amount, players_json)
-            VALUES (?, ?, ?)
+            INSERT INTO games (session_id, buyin_amount, players_json, game_name)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 buyin_amount = excluded.buyin_amount,
-                players_json = excluded.players_json
+                players_json = excluded.players_json,
+                game_name    = COALESCE(excluded.game_name, game_name)
             """,
-            (session_id, game.buyin_amount, players_json),
+            (session_id, game.buyin_amount, players_json, game_name),
         )
 
 
@@ -141,11 +157,11 @@ def _resolve_player(game: HoldemGame, target_name: str) -> tuple[str, str]:
     return proxy_id, game.players[proxy_id].name
 
 
-def cmd_start(session_id: str, buyin_amount: int) -> str:
+def cmd_start(session_id: str, buyin_amount: int, game_name: str = "") -> str:
     if buyin_amount <= 0:
         return "Buy-in amount must be a positive number."
     game = HoldemGame(buyin_amount)
-    _save_game(session_id, game)
+    _save_game(session_id, game, game_name=game_name or None)
     return (
         f"🃏 Game started!\n"
         f"Buy-in unit: {buyin_amount} chips\n"
@@ -388,7 +404,141 @@ def cmd_remove(session_id: str, target_name: str) -> str:
     )
 
 
+def cmd_set_buyins(session_id: str, target_name: str, count: int) -> str:
+    game = _load_game(session_id)
+    if game is None:
+        return "No game running."
+    if count <= 0:
+        return "Buy-in count must be at least 1."
+
+    player_id, display_name = _resolve_player(game, target_name)
+    player = game.players[player_id]
+
+    if player.checkout_chips is not None:
+        return f"{display_name} has already checked out — use 'revise' to adjust chips."
+
+    old = player.buyins
+    player.buyins = count
+    invested = count * game.buyin_amount
+    _save_game(session_id, game)
+    return (
+        f"✏️ {display_name} buy-ins updated\n"
+        f"  {old}× → {count}× = {invested} chips invested"
+    )
+
+
 def cmd_reset(session_id: str) -> str:
     with _get_conn() as conn:
         conn.execute("DELETE FROM games WHERE session_id = ?", (session_id,))
     return "Game reset. Start a new game with: start <amount>"
+
+
+def list_games() -> list[dict]:
+    """Returns all games sorted by newest first."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT session_id, buyin_amount, players_json, game_name, created_at FROM games ORDER BY created_at DESC"
+        ).fetchall()
+    result = []
+    for session_id, buyin_amount, players_json, game_name, created_at in rows:
+        players = json.loads(players_json)
+        all_out = bool(players) and all(
+            p.get("checkout_chips") is not None for p in players.values()
+        )
+        total_in = sum(p["buyins"] * buyin_amount for p in players.values())
+        total_out = sum(
+            p["checkout_chips"] for p in players.values() if p.get("checkout_chips") is not None
+        )
+        if not players:
+            status = "empty"
+        elif all_out and total_in == total_out:
+            status = "complete"
+        elif all_out:
+            status = "unbalanced"
+        else:
+            status = "active"
+        result.append(
+            {
+                "session_id": session_id,
+                "buyin_amount": buyin_amount,
+                "game_name": game_name or "",
+                "created_at": created_at or "",
+                "player_count": len(players),
+                "total_pot": total_in,
+                "status": status,
+            }
+        )
+    return result
+
+
+def get_game_state(session_id: str) -> Optional[dict]:
+    """Returns full game state as a dict for the web API."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT buyin_amount, players_json, game_name, created_at FROM games WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    buyin_amount, players_json, game_name, created_at = row
+    players_raw = json.loads(players_json)
+
+    players = []
+    for pid, data in players_raw.items():
+        invested = data["buyins"] * buyin_amount
+        checkout = data.get("checkout_chips")
+        delta = (checkout - invested) if checkout is not None else None
+        players.append(
+            {
+                "id": pid,
+                "name": data["name"],
+                "buyins": data["buyins"],
+                "invested": invested,
+                "checkout_chips": checkout,
+                "delta": delta,
+                "status": "out" if checkout is not None else "in",
+            }
+        )
+
+    players.sort(
+        key=lambda p: (
+            p["status"] == "out",
+            -(p["delta"] or 0) if p["status"] == "out" else 0,
+        )
+    )
+
+    all_out = bool(players) and all(p["status"] == "out" for p in players)
+    total_in = sum(p["invested"] for p in players)
+    total_out = sum(p["checkout_chips"] for p in players if p["checkout_chips"] is not None)
+    balanced = all_out and total_in == total_out
+
+    return {
+        "session_id": session_id,
+        "buyin_amount": buyin_amount,
+        "game_name": game_name or "",
+        "created_at": created_at or "",
+        "players": players,
+        "total_pot": total_in,
+        "all_checked_out": all_out,
+        "balanced": balanced,
+        "total_out": total_out,
+        "status": "complete" if (all_out and balanced) else ("active" if players else "empty"),
+    }
+
+
+def get_regulars() -> list[str]:
+    with _get_conn() as conn:
+        rows = conn.execute("SELECT name FROM regular_players ORDER BY name").fetchall()
+    return [r[0] for r in rows]
+
+
+def add_regular(name: str) -> None:
+    name = name.strip()
+    if name:
+        with _get_conn() as conn:
+            conn.execute("INSERT OR IGNORE INTO regular_players (name) VALUES (?)", (name,))
+
+
+def remove_regular(name: str) -> None:
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM regular_players WHERE name = ?", (name,))

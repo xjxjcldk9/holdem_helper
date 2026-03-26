@@ -1,0 +1,440 @@
+{% extends "base.html" %}
+{% block title %}{{ state.game_name or 'Game' }} — Holdem Helper{% endblock %}
+
+{% block content %}
+<!-- Header -->
+<header class="border-b border-surface-border sticky top-0 z-10 bg-surface/90 backdrop-blur-sm">
+  <div class="max-w-5xl mx-auto px-4 sm:px-6 py-4 flex items-center gap-4">
+    <a href="/" class="text-slate-500 hover:text-slate-300 transition-colors flex-shrink-0">
+      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+      </svg>
+    </a>
+    <div class="min-w-0 flex-1">
+      <h1 class="text-lg font-semibold text-white truncate">
+        {{ state.game_name or 'Untitled Game' }}
+      </h1>
+      <p class="text-xs text-slate-500">
+        Buy-in: <span class="text-amber-400 font-medium">{{ state.buyin_amount }}</span> chips
+        &nbsp;·&nbsp;
+        {{ state.created_at[:16].replace('T', ' ') if state.created_at else '' }}
+      </p>
+    </div>
+    <!-- Pot summary -->
+    <div class="text-right flex-shrink-0">
+      <p class="text-[11px] text-slate-500 uppercase tracking-wide">Total Pot</p>
+      <p class="text-lg font-bold text-white" id="total-pot">{{ state.total_pot }}</p>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+
+  <!-- Player grid -->
+  <div id="players-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+    <!-- rendered by JS -->
+  </div>
+
+  <!-- Add player / Re-buy -->
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wide">Add Player / Re-buy</h2>
+    </div>
+    <!-- Regular players quick-add -->
+    <div id="regulars-row" class="flex flex-wrap gap-2 mb-4"></div>
+    <form id="buy-form" onsubmit="handleBuyIn(event)" class="flex flex-col sm:flex-row gap-3">
+      <div class="flex-1 relative">
+        <input id="buy-name" type="text" name="player_name"
+               placeholder="Player name"
+               required autocomplete="off"
+               list="player-names-list"
+               class="input-field" />
+        <datalist id="player-names-list"></datalist>
+      </div>
+      <div class="flex gap-3 sm:w-auto">
+        <div class="relative flex items-center">
+          <button type="button" onclick="adjustTimes(-1)"
+                  class="absolute left-2 text-slate-400 hover:text-white text-lg leading-none select-none">−</button>
+          <input id="buy-times" type="number" name="times" value="1" min="1" max="99"
+                 class="input-field text-center w-24 px-8" />
+          <button type="button" onclick="adjustTimes(1)"
+                  class="absolute right-2 text-slate-400 hover:text-white text-lg leading-none select-none">+</button>
+        </div>
+        <button type="submit" class="btn-primary text-sm whitespace-nowrap px-5">
+          Buy In
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Results panel (shown when all checked out and balanced) -->
+  <div id="results-panel" style="display:none" class="card overflow-hidden">
+    <div class="bg-amber-500/10 border-b border-amber-500/20 px-5 py-4 flex items-center gap-3">
+      <span class="text-2xl">🏆</span>
+      <div>
+        <h2 class="font-bold text-amber-300">Final Results</h2>
+        <p class="text-xs text-amber-400/70">All players checked out · Totals balanced</p>
+      </div>
+    </div>
+    <div id="results-list" class="divide-y divide-surface-border"></div>
+  </div>
+
+  <!-- Unbalanced warning -->
+  <div id="unbalanced-panel" style="display:none" class="card border-red-500/30 p-5">
+    <div class="flex items-start gap-3">
+      <span class="text-xl mt-0.5">⚠️</span>
+      <div>
+        <p class="font-semibold text-red-400">Totals don't balance</p>
+        <p id="unbalanced-detail" class="text-sm text-slate-400 mt-1"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Danger zone -->
+  <div class="border-t border-surface-border pt-4">
+    <button onclick="deleteGame()"
+            class="text-xs text-slate-600 hover:text-red-400 transition-colors">
+      Delete this game
+    </button>
+  </div>
+
+</main>
+
+<!-- Checkout / Revise modal -->
+<div id="action-modal"
+     style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.72); backdrop-filter:blur(4px); align-items:center; justify-content:center; z-index:50; padding:1rem;"
+     onclick="closeActionModal(event)">
+  <div class="card w-full max-w-xs p-6 shadow-2xl" id="action-modal-box">
+    <h2 id="action-modal-title" class="text-base font-semibold text-white mb-1"></h2>
+    <p id="action-modal-sub" class="text-sm text-slate-500 mb-5"></p>
+    <div class="mb-4">
+      <label id="action-chips-label" class="block text-sm text-slate-400 mb-1.5">Final chip count</label>
+      <input id="action-chips" type="number" min="0"
+             placeholder="e.g. 3500"
+             class="input-field" autocomplete="off"
+             onkeydown="if(event.key==='Enter') submitAction()" />
+    </div>
+    <div class="flex gap-3">
+      <button onclick="closeActionModal()" class="btn-secondary flex-1 text-sm">Cancel</button>
+      <button id="action-submit-btn" onclick="submitAction()" class="btn-primary flex-1 text-sm">Confirm</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SESSION_ID = {{ state.session_id | tojson }};
+let gameState = {{ state | tojson }};
+let pendingAction = null; // { type: 'checkout'|'revise', playerName }
+
+// ── Render ──────────────────────────────────────────────────────────────────
+
+function renderAll(state) {
+  gameState = state;
+  renderPlayers(state);
+  renderStats(state);
+  renderResults(state);
+  updatePlayerNamesList(state);
+}
+
+function renderPlayers(state) {
+  const grid = document.getElementById('players-grid');
+  if (!state.players.length) {
+    grid.innerHTML = `
+      <div class="col-span-full text-center py-10 text-slate-500">
+        <p class="text-3xl mb-3 select-none">🎲</p>
+        <p class="text-sm">No players yet — add one below</p>
+      </div>`;
+    return;
+  }
+  grid.innerHTML = state.players.map(p => playerCard(p, state.buyin_amount)).join('');
+}
+
+function playerCard(p, buyinAmount) {
+  const isOut = p.status === 'out';
+  let borderClass, statusHtml, actionsHtml;
+
+  const removeBtn = `
+    <button onclick="removePlayer('${esc(p.name)}')" title="Remove player"
+            style="position:absolute; top:0.5rem; right:0.5rem; width:1.75rem; height:1.75rem;
+                   display:flex; align-items:center; justify-content:center;
+                   border-radius:0.375rem; border:none; cursor:pointer;
+                   background:transparent; color:#475569; font-size:1rem; line-height:1;
+                   transition:background 0.15s, color 0.15s;"
+            onmouseover="this.style.background='rgba(239,68,68,0.15)'; this.style.color='#f87171'"
+            onmouseout="this.style.background='transparent'; this.style.color='#475569'">✕</button>`;
+
+  if (isOut) {
+    const pos = p.delta >= 0;
+    borderClass = pos ? 'border-green-500/30' : 'border-red-500/30';
+    const deltaColor = pos ? 'text-green-400' : 'text-red-400';
+    const sign = p.delta >= 0 ? '+' : '';
+    statusHtml = `
+      <div class="flex items-baseline gap-2 mt-1">
+        <span class="text-sm font-medium text-slate-300">${p.checkout_chips.toLocaleString()} chips out</span>
+        <span class="text-sm font-semibold ${deltaColor}">${sign}${p.delta.toLocaleString()}</span>
+      </div>`;
+    actionsHtml = `
+      <button onclick="openRevise('${esc(p.name)}')"
+              class="text-xs text-slate-500 hover:text-amber-400 transition-colors">
+        Revise chips
+      </button>`;
+  } else {
+    borderClass = 'border-surface-border';
+    statusHtml = `<p class="text-xs text-amber-400/80 mt-1 font-medium">In game</p>`;
+    actionsHtml = `
+      <button onclick="openCheckout('${esc(p.name)}')"
+              class="text-xs bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 hover:text-amber-300 px-3 py-1.5 rounded-lg transition-colors font-medium">
+        Checkout
+      </button>
+      <button onclick="openEditBuyins('${esc(p.name)}', ${p.buyins})"
+              title="Edit buy-in count"
+              class="text-xs text-slate-500 hover:text-slate-300 transition-colors px-2 py-1.5">
+        ✏️ Edit
+      </button>`;
+  }
+
+  return `
+    <div class="card ${borderClass} p-4 flex flex-col gap-3" style="position:relative;">
+      ${removeBtn}
+      <div style="padding-right:1.5rem;">
+        <p class="font-semibold text-white">${esc(p.name)}</p>
+        <p class="text-xs text-slate-500 mt-0.5">${p.buyins}× ${buyinAmount.toLocaleString()} = <span class="text-slate-400">${p.invested.toLocaleString()} invested</span></p>
+        ${statusHtml}
+      </div>
+      <div class="flex items-center gap-3 pt-1 border-t border-surface-border">
+        ${actionsHtml}
+      </div>
+    </div>`;
+}
+
+function renderStats(state) {
+  document.getElementById('total-pot').textContent = state.total_pot.toLocaleString();
+}
+
+function renderResults(state) {
+  const panel = document.getElementById('results-panel');
+  const unbalanced = document.getElementById('unbalanced-panel');
+
+  if (state.all_checked_out && state.balanced) {
+    panel.style.display = 'block';
+    unbalanced.style.display = 'none';
+    const sorted = [...state.players].sort((a, b) => (b.delta || 0) - (a.delta || 0));
+    const maxDelta = sorted[0]?.delta ?? -Infinity;
+    document.getElementById('results-list').innerHTML = sorted.map((p, i) => {
+      const isWinner = p.delta === maxDelta && p.delta > 0;
+      const pos = p.delta >= 0;
+      const deltaColor = pos ? 'text-green-400' : 'text-red-400';
+      const sign = p.delta >= 0 ? '+' : '';
+      return `
+        <div class="flex items-center justify-between px-5 py-3.5">
+          <div class="flex items-center gap-3">
+            <span class="text-lg w-7 text-center">${isWinner ? '🥇' : rankEmoji(i)}</span>
+            <div>
+              <p class="font-medium text-white">${esc(p.name)}</p>
+              <p class="text-xs text-slate-500">${p.invested.toLocaleString()} invested · ${p.checkout_chips.toLocaleString()} out</p>
+            </div>
+          </div>
+          <p class="font-bold text-base ${deltaColor}">${sign}${p.delta.toLocaleString()}</p>
+        </div>`;
+    }).join('');
+  } else if (state.all_checked_out && !state.balanced) {
+    panel.style.display = 'none';
+    unbalanced.style.display = 'block';
+    const diff = state.total_out - state.total_pot;
+    document.getElementById('unbalanced-detail').textContent =
+      `Bought in: ${state.total_pot.toLocaleString()} · Cashed out: ${state.total_out.toLocaleString()} · Diff: ${diff >= 0 ? '+' : ''}${diff.toLocaleString()}`;
+  } else {
+    panel.style.display = 'none';
+    unbalanced.style.display = 'none';
+  }
+}
+
+function rankEmoji(i) {
+  return ['🥇','🥈','🥉'][i] || `#${i+1}`;
+}
+
+function updatePlayerNamesList(state) {
+  const list = document.getElementById('player-names-list');
+  list.innerHTML = state.players.map(p => `<option value="${esc(p.name)}">`).join('');
+}
+
+function esc(str) {
+  return str.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;');
+}
+
+// ── Buy In ───────────────────────────────────────────────────────────────────
+
+function adjustTimes(delta) {
+  const el = document.getElementById('buy-times');
+  el.value = Math.max(1, Math.min(99, parseInt(el.value, 10) + delta));
+}
+
+async function handleBuyIn(e) {
+  e.preventDefault();
+  const name = document.getElementById('buy-name').value.trim();
+  const times = parseInt(document.getElementById('buy-times').value, 10);
+  if (!name) return;
+  await apiCall(`/api/games/${SESSION_ID}/buy`, { player_name: name, times });
+  document.getElementById('buy-form').reset();
+  document.getElementById('buy-times').value = 1;
+}
+
+async function handleBuyInFor(playerName) {
+  await apiCall(`/api/games/${SESSION_ID}/buy`, { player_name: playerName, times: 1 });
+}
+
+// ── Checkout / Revise modal ──────────────────────────────────────────────────
+
+function showModal() {
+  const m = document.getElementById('action-modal');
+  m.style.display = 'flex';
+}
+function hideModal() {
+  const m = document.getElementById('action-modal');
+  m.style.display = 'none';
+}
+
+function openCheckout(name) {
+  pendingAction = { type: 'checkout', playerName: name };
+  const p = gameState.players.find(p => p.name === name);
+  document.getElementById('action-modal-title').textContent = `Checkout — ${name}`;
+  document.getElementById('action-modal-sub').textContent =
+    `Invested: ${p ? p.invested.toLocaleString() : '?'} chips`;
+  document.getElementById('action-chips-label').textContent = 'Final chip count';
+  document.getElementById('action-chips').value = '';
+  document.getElementById('action-submit-btn').textContent = 'Checkout';
+  showModal();
+  setTimeout(() => document.getElementById('action-chips').focus(), 50);
+}
+
+function openRevise(name) {
+  pendingAction = { type: 'revise', playerName: name };
+  const p = gameState.players.find(p => p.name === name);
+  document.getElementById('action-modal-title').textContent = `Revise — ${name}`;
+  document.getElementById('action-modal-sub').textContent =
+    `Current: ${p ? p.checkout_chips.toLocaleString() : '?'} chips`;
+  document.getElementById('action-chips-label').textContent = 'Final chip count';
+  document.getElementById('action-chips').value = p ? p.checkout_chips : '';
+  document.getElementById('action-submit-btn').textContent = 'Revise';
+  showModal();
+  setTimeout(() => document.getElementById('action-chips').focus(), 50);
+}
+
+function openEditBuyins(name, currentCount) {
+  pendingAction = { type: 'set_buyins', playerName: name };
+  document.getElementById('action-modal-title').textContent = `Edit Buy-ins — ${name}`;
+  document.getElementById('action-modal-sub').textContent = `Current: ${currentCount}×`;
+  document.getElementById('action-chips-label').textContent = 'Buy-in count';
+  document.getElementById('action-chips').value = currentCount;
+  document.getElementById('action-submit-btn').textContent = 'Update';
+  showModal();
+  setTimeout(() => document.getElementById('action-chips').focus(), 50);
+}
+
+function closeActionModal(e) {
+  if (!e || e.target === document.getElementById('action-modal') || e === 'force') {
+    hideModal();
+    pendingAction = null;
+  }
+}
+
+async function submitAction() {
+  if (!pendingAction) return;
+  const val = parseInt(document.getElementById('action-chips').value, 10);
+  if (isNaN(val) || val < 0) { showToast('Enter a valid number', 'error'); return; }
+  const { type, playerName } = pendingAction;  // capture before closing modal nulls it
+  closeActionModal('force');
+  if (type === 'set_buyins') {
+    if (val <= 0) { showToast('Buy-in count must be at least 1', 'error'); return; }
+    await apiCall(`/api/games/${SESSION_ID}/set-buyins`, { player_name: playerName, count: val });
+  } else {
+    const endpoint = type === 'checkout' ? 'checkout' : 'revise';
+    await apiCall(`/api/games/${SESSION_ID}/${endpoint}`, { player_name: playerName, chips: val });
+  }
+}
+
+// ── Remove ───────────────────────────────────────────────────────────────────
+
+async function removePlayer(name) {
+  if (!confirm(`Remove ${name} from the game?`)) return;
+  await apiCall(`/api/games/${SESSION_ID}/remove`, { player_name: name });
+}
+
+// ── Regulars ─────────────────────────────────────────────────────────────────
+
+async function loadRegulars() {
+  const res = await fetch('/api/regulars');
+  const regulars = await res.json();
+  renderRegulars(regulars);
+}
+
+function renderRegulars(regulars) {
+  const row = document.getElementById('regulars-row');
+  if (!regulars.length) { row.innerHTML = ''; return; }
+  row.innerHTML = regulars.map(name => {
+    const alreadyIn = gameState.players.some(p => p.name.toLowerCase() === name.toLowerCase());
+    const style = alreadyIn
+      ? 'background:#1a2035; color:#64748b; border:1px solid #2a3348; cursor:default;'
+      : 'background:#1a2035; color:#e2e8f0; border:1px solid #3a4560; cursor:pointer;';
+    const onclick = alreadyIn ? '' : `onclick="quickBuyIn('${esc(name)}')"`;
+    return `<button ${onclick} style="${style} padding:0.35rem 0.85rem; border-radius:9999px; font-size:0.8rem; font-weight:500; transition:background 0.15s;"
+      onmouseover="if(!${alreadyIn})this.style.background='#253050'"
+      onmouseout="if(!${alreadyIn})this.style.background='#1a2035'"
+    >${esc(name)}${alreadyIn ? ' ✓' : ''}</button>`;
+  }).join('');
+}
+
+async function quickBuyIn(name) {
+  await apiCall(`/api/games/${SESSION_ID}/buy`, { player_name: name, times: 1 });
+  loadRegulars(); // refresh check marks
+}
+
+// ── Delete game ──────────────────────────────────────────────────────────────
+
+async function deleteGame() {
+  if (!confirm('Delete this entire game? This cannot be undone.')) return;
+  const res = await fetch(`/api/games/${SESSION_ID}`, { method: 'DELETE' });
+  if (res.ok) window.location.href = '/';
+  else showToast('Failed to delete game', 'error');
+}
+
+// ── Shared API helper ─────────────────────────────────────────────────────────
+
+async function apiCall(url, body) {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.error || 'Something went wrong', 'error');
+      return;
+    }
+    showToast(firstLine(data.message), 'success');
+    renderAll(data.state);
+    loadRegulars();
+  } catch {
+    showToast('Network error', 'error');
+  }
+}
+
+function firstLine(msg) {
+  return (msg || '').split('\n')[0].replace(/^[✅✏️🗑️⏳🎉⚠️]+\s*/, '');
+}
+
+// ── Keyboard ─────────────────────────────────────────────────────────────────
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeActionModal('force');
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+renderAll(gameState);
+loadRegulars();
+</script>
+{% endblock %}

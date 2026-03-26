@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% block title %}Holdem Helper — Dashboard{% endblock %}
+
+{% block content %}
+<!-- Header -->
+<header class="border-b border-surface-border">
+  <div class="max-w-5xl mx-auto px-4 sm:px-6 py-5 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <span class="text-2xl select-none">♠</span>
+      <h1 class="text-xl font-bold tracking-tight text-white">Holdem Helper</h1>
+    </div>
+    <div class="flex items-center gap-2">
+      <button onclick="openRegularsModal()" class="btn-secondary flex items-center gap-2 text-sm">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a4 4 0 00-5-3.87M9 20H4v-2a4 4 0 015-3.87m6-4.13a4 4 0 11-8 0 4 4 0 018 0zm6-4a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        Regulars
+      </button>
+      <button onclick="openModal()" class="btn-primary flex items-center gap-2 text-sm">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+        </svg>
+        New Game
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- Body -->
+<main class="max-w-5xl mx-auto px-4 sm:px-6 py-8">
+
+  {% if games %}
+  <!-- Stats row -->
+  <div class="flex gap-6 mb-6 text-sm">
+    <span class="text-slate-500">
+      <span class="text-slate-300 font-semibold">{{ games|length }}</span> game{{ 's' if games|length != 1 }}
+    </span>
+    {% set active_count = games | selectattr('status', 'eq', 'active') | list | length %}
+    {% set complete_count = games | selectattr('status', 'eq', 'complete') | list | length %}
+    {% if active_count %}
+    <span class="text-slate-500">
+      <span class="text-amber-400 font-semibold">{{ active_count }}</span> active
+    </span>
+    {% endif %}
+    {% if complete_count %}
+    <span class="text-slate-500">
+      <span class="text-green-400 font-semibold">{{ complete_count }}</span> complete
+    </span>
+    {% endif %}
+  </div>
+
+  <!-- Game grid -->
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    {% for game in games %}
+    {% set badge_class = {
+      'active':      'bg-amber-500/15 text-amber-400 border border-amber-500/30',
+      'complete':    'bg-green-500/15 text-green-400 border border-green-500/30',
+      'empty':       'bg-slate-500/15 text-slate-400 border border-slate-500/30',
+      'unbalanced':  'bg-red-500/15 text-red-400 border border-red-500/30',
+    }[game.status] %}
+    <a href="/game/{{ game.session_id }}"
+       class="card p-5 block hover:border-slate-600 hover:bg-surface-hover transition-all duration-150 group">
+      <div class="flex items-start justify-between mb-4">
+        <div class="min-w-0 flex-1">
+          <h3 class="font-semibold text-white truncate group-hover:text-amber-300 transition-colors">
+            {{ game.game_name or 'Untitled Game' }}
+          </h3>
+          <p class="text-xs text-slate-500 mt-0.5 truncate">
+            {{ game.created_at[:16].replace('T', ' ') if game.created_at else '—' }}
+          </p>
+        </div>
+        <span class="ml-3 flex-shrink-0 text-xs font-medium px-2 py-0.5 rounded-full {{ badge_class }}">
+          {{ game.status }}
+        </span>
+      </div>
+
+      <div class="grid grid-cols-3 gap-3 py-3 border-t border-surface-border">
+        <div class="text-center">
+          <p class="text-[11px] text-slate-500 uppercase tracking-wide mb-1">Buy-in</p>
+          <p class="font-semibold text-amber-400 text-sm">{{ game.buyin_amount }}</p>
+        </div>
+        <div class="text-center">
+          <p class="text-[11px] text-slate-500 uppercase tracking-wide mb-1">Players</p>
+          <p class="font-semibold text-white text-sm">{{ game.player_count }}</p>
+        </div>
+        <div class="text-center">
+          <p class="text-[11px] text-slate-500 uppercase tracking-wide mb-1">Pot</p>
+          <p class="font-semibold text-white text-sm">{{ game.total_pot }}</p>
+        </div>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+
+  {% else %}
+  <!-- Empty state -->
+  <div class="text-center py-28">
+    <div class="text-5xl mb-5 select-none">🃏</div>
+    <p class="text-lg font-medium text-slate-300 mb-2">No games yet</p>
+    <p class="text-sm text-slate-500 mb-8">Start a new game to begin tracking chips</p>
+    <button onclick="openModal()" class="btn-primary">
+      Start First Game
+    </button>
+  </div>
+  {% endif %}
+
+</main>
+
+<!-- New Game Modal -->
+<div id="modal-overlay"
+     style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.72); backdrop-filter:blur(4px); align-items:center; justify-content:center; z-index:50; padding:1rem;"
+     onclick="overlayClose(event)">
+  <div class="card w-full max-w-sm p-6 shadow-2xl" id="modal-box">
+    <div class="flex items-center justify-between mb-6">
+      <h2 class="text-lg font-semibold text-white">New Game</h2>
+      <button onclick="closeModal()" class="text-slate-500 hover:text-slate-300 transition-colors">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <form id="new-game-form" onsubmit="createGame(event)">
+      <div class="mb-4">
+        <label class="block text-sm text-slate-400 mb-1.5" for="game-name">Game Name</label>
+        <input id="game-name" type="text" name="game_name"
+               class="input-field" autocomplete="off" />
+      </div>
+      <div class="mb-6">
+        <label class="block text-sm text-slate-400 mb-1.5" for="buyin-amount">
+          Buy-in Amount <span class="text-red-400">*</span>
+        </label>
+        <input id="buyin-amount" type="number" name="buyin_amount"
+               required min="1" value="500"
+               class="input-field" autocomplete="off" />
+      </div>
+      <div class="flex gap-3">
+        <button type="button" onclick="closeModal()" class="btn-secondary flex-1 text-sm">
+          Cancel
+        </button>
+        <button type="submit" id="create-btn" class="btn-primary flex-1 text-sm">
+          Start Game
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+<!-- Regulars Modal -->
+<div id="regulars-modal"
+     style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.72); backdrop-filter:blur(4px); align-items:center; justify-content:center; z-index:50; padding:1rem;"
+     onclick="if(event.target===this) closeRegularsModal()">
+  <div class="card w-full max-w-sm p-6 shadow-2xl">
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="text-lg font-semibold text-white">Regular Players</h2>
+      <button onclick="closeRegularsModal()" class="text-slate-500 hover:text-slate-300 transition-colors">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Current regulars list -->
+    <div id="regulars-list" class="mb-4 space-y-1 max-h-56 overflow-y-auto"></div>
+
+    <!-- Add new regular -->
+    <div class="flex gap-2 pt-3 border-t border-surface-border">
+      <input id="new-regular-input" type="text" placeholder="Player name"
+             class="input-field flex-1"
+             onkeydown="if(event.key==='Enter') addRegular()"
+             autocomplete="off" />
+      <button onclick="addRegular()" class="btn-primary text-sm px-4">Add</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const ADJECTIVES = ['Wild','Lucky','Midnight','Golden','Smoky','Blind','River','Royal','Dirty','Silent','Loose','Tight'];
+  const NOUNS = ['Aces','Spades','Kings','Bluff','Flop','River','Sharks','Felts','Chips','Rounds','Pots','Hands'];
+  function randomName() {
+    const a = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+    const n = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+    return `${a} ${n}`;
+  }
+
+  function openModal() {
+    document.getElementById('game-name').value = randomName();
+    document.getElementById('buyin-amount').value = 500;
+    document.getElementById('modal-overlay').style.display = 'flex';
+    setTimeout(() => document.getElementById('buyin-amount').focus(), 50);
+  }
+  function closeModal() {
+    document.getElementById('modal-overlay').style.display = 'none';
+    document.getElementById('new-game-form').reset();
+  }
+  function overlayClose(e) {
+    if (e.target === document.getElementById('modal-overlay')) closeModal();
+  }
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeModal(); closeRegularsModal(); }
+  });
+
+  async function createGame(e) {
+    e.preventDefault();
+    const btn = document.getElementById('create-btn');
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+    const form = e.target;
+    const body = {
+      game_name:    form.game_name.value.trim(),
+      buyin_amount: parseInt(form.buyin_amount.value, 10),
+    };
+    try {
+      const res = await fetch('/api/games', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Error creating game', 'error'); return; }
+      window.location.href = data.redirect;
+    } catch {
+      showToast('Network error', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Start Game';
+    }
+  }
+
+  // ── Regulars ────────────────────────────────────────────────────────────────
+
+  function esc(s) {
+    return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;');
+  }
+
+  async function openRegularsModal() {
+    document.getElementById('regulars-modal').style.display = 'flex';
+    await refreshRegularsList();
+    setTimeout(() => document.getElementById('new-regular-input').focus(), 50);
+  }
+  function closeRegularsModal() {
+    document.getElementById('regulars-modal').style.display = 'none';
+    document.getElementById('new-regular-input').value = '';
+  }
+
+  async function refreshRegularsList() {
+    const res = await fetch('/api/regulars');
+    const regulars = await res.json();
+    const list = document.getElementById('regulars-list');
+    if (!regulars.length) {
+      list.innerHTML = '<p style="color:#475569; font-size:0.85rem; text-align:center; padding:1rem 0;">No regulars yet</p>';
+      return;
+    }
+    list.innerHTML = regulars.map(name => `
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem 0.6rem; border-radius:0.5rem; background:#1a2035;">
+        <span style="font-size:0.875rem; color:#e2e8f0;">${esc(name)}</span>
+        <button onclick="removeRegular('${esc(name)}')"
+                style="color:#475569; font-size:1rem; background:none; border:none; cursor:pointer; line-height:1; padding:0 0.2rem;"
+                onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#475569'">✕</button>
+      </div>`).join('');
+  }
+
+  async function addRegular() {
+    const input = document.getElementById('new-regular-input');
+    const name = input.value.trim();
+    if (!name) return;
+    await fetch('/api/regulars', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    input.value = '';
+    await refreshRegularsList();
+  }
+
+  async function removeRegular(name) {
+    await fetch(`/api/regulars/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    await refreshRegularsList();
+  }
+</script>
+{% endblock %}

@@ -1,253 +1,180 @@
-import logging
-import os
-import re
+import uuid
 
-from flask import Flask, abort, request
-from linebot.v3 import WebhookHandler
-from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.messaging import (
-    ApiClient,
-    Configuration,
-    MessagingApi,
-    ReplyMessageRequest,
-    TextMessage,
-)
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from flask import Flask, jsonify, redirect, render_template, request, url_for
 
 import game as g
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-logger = logging.getLogger(__name__)
-
 app = Flask(__name__)
 
-CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
-CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 
-configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(CHANNEL_SECRET)
-
-
-def get_session_id(event: MessageEvent) -> str:
-    """Return group_id for group chats, user_id for 1-on-1."""
-    src = event.source
-    if hasattr(src, "group_id") and src.group_id:
-        return src.group_id
-    if hasattr(src, "room_id") and src.room_id:
-        return src.room_id
-    return src.user_id
+# ---------------------------------------------------------------------------
+# Pages
+# ---------------------------------------------------------------------------
 
 
-def parse_command(text: str) -> tuple[str, list[str]]:
-    """Normalise text into (command, args). Strips leading slash/dot."""
-    text = text.strip()
-    # allow /start, .start, or just start
-    text = re.sub(r"^[/.]", "", text)
-    parts = text.split()
-    cmd = parts[0].lower() if parts else ""
-    args = parts[1:]
-    return cmd, args
+@app.get("/")
+def index():
+    games = g.list_games()
+    return render_template("index.html", games=games)
 
 
-def handle_text(session_id: str, user_id: str, user_name: str, text: str) -> str:
-    cmd, args = parse_command(text)
-
-    # start <amount>
-    if cmd == "start":
-        if not args or not args[0].isdigit():
-            return "Usage: start <buy-in amount>  e.g. start 100"
-        return g.cmd_start(session_id, int(args[0]))
-
-    # buy  /  buy*3  /  buy Alice  /  buy*3 Alice
-    if cmd.startswith("buy"):
-        # buy*3 form
-        m = re.match(r"buy\*(\d+)$", cmd)
-        if m:
-            times = int(m.group(1))
-            target = args[0] if args and not args[0].isdigit() else None
-        elif args and args[0].isdigit():
-            times = int(args[0])
-            target = args[1] if len(args) > 1 and not args[1].isdigit() else None
-        elif args and not args[0].isdigit():
-            # buy Alice  or  buy*3 Alice (already handled above)
-            times = 1
-            target = args[0]
-        else:
-            times = 1
-            target = None
-        return g.cmd_buyin(session_id, user_id, user_name, times, target_name=target)
-
-    # checkout <chips>  /  checkout Alice <chips>
-    if cmd in ("checkout", "cashout", "out"):
-        # checkout Alice 2500  — name first, then chips
-        if len(args) == 2 and not args[0].lstrip("-").isdigit() and args[1].lstrip("-").isdigit():
-            return g.cmd_checkout(session_id, user_id, user_name, int(args[1]), target_name=args[0])
-        # checkout 2500
-        if not args or not args[0].lstrip("-").isdigit():
-            return "Usage: checkout <chips>  or  checkout <name> <chips>"
-        return g.cmd_checkout(session_id, user_id, user_name, int(args[0]))
-
-    # revise <chips>  /  revise <name> <chips>
-    if cmd in ("revise", "fix", "correct"):
-        if len(args) == 2 and not args[0].lstrip("-").isdigit() and args[1].lstrip("-").isdigit():
-            return g.cmd_revise(session_id, user_id, user_name, int(args[1]), target_name=args[0])
-        if not args or not args[0].lstrip("-").isdigit():
-            return "Usage: revise <chips>  or  revise <name> <chips>"
-        return g.cmd_revise(session_id, user_id, user_name, int(args[0]))
-
-    # result / settle / final
-    if cmd in ("result", "settle", "final", "results"):
-        return g.cmd_result(session_id)
-
-    # status
-    if cmd in ("status", "info"):
-        return g.cmd_status(session_id)
-
-    # remove <name>
-    if cmd in ("remove", "delete", "del"):
-        if not args:
-            return "Usage: remove <name>"
-        return g.cmd_remove(session_id, " ".join(args))
-
-    # reset
-    if cmd in ("reset", "restart", "newgame"):
-        return g.cmd_reset(session_id)
-
-    # name <display name>
-    if cmd in ("name", "setname", "myname"):
-        if not args:
-            return "Usage: name <your display name>"
-        return g.cmd_setname(user_id, " ".join(args))
-
-    # help
-    if cmd in ("help", "?"):
-        return (
-            "🃏 Hold'em Cash Game Helper\n"
-            "\n"
-            "▸ start <amount>\n"
-            "  Start game, set buy-in unit\n"
-            "\n"
-            "▸ buy\n"
-            "  Buy in once (yourself)\n"
-            "\n"
-            "▸ buy*N\n"
-            "  Buy in N times (yourself)\n"
-            "\n"
-            "▸ buy <name>\n"
-            "▸ buy*N <name>\n"
-            "  Buy in for an absent player\n"
-            "\n"
-            "▸ checkout <chips>\n"
-            "  Cash out yourself\n"
-            "\n"
-            "▸ checkout <name> <chips>\n"
-            "  Cash out an absent player\n"
-            "\n"
-            "▸ revise <chips>\n"
-            "  Fix your checkout amount\n"
-            "\n"
-            "▸ revise <name> <chips>\n"
-            "  Fix another player's checkout\n"
-            "\n"
-            "▸ result\n"
-            "  Show final P&L\n"
-            "\n"
-            "▸ status\n"
-            "  Show current game state\n"
-            "\n"
-            "▸ remove <name>\n"
-            "  Remove a player (undo wrong buy-in)\n"
-            "\n"
-            "▸ reset\n"
-            "  Clear game and start fresh\n"
-            "\n"
-            "▸ name <your name>\n"
-            "  Set your display name (if LINE name unreadable)"
-        )
-
-    return ""  # ignore unknown messages silently
+@app.get("/game/<session_id>")
+def game_view(session_id):
+    state = g.get_game_state(session_id)
+    if state is None:
+        return redirect(url_for("index"))
+    return render_template("game.html", state=state)
 
 
-@app.route("/callback", methods=["POST"])
-def callback():
-    signature = request.headers.get("X-Line-Signature", "")
-    body = request.get_data(as_text=True)
+# ---------------------------------------------------------------------------
+# API
+# ---------------------------------------------------------------------------
 
-    logger.debug("=== /callback ===")
-    logger.debug("Signature header: %r", signature)
-    logger.debug("Body: %s", body)
 
-    if not signature:
-        logger.error("Missing X-Line-Signature header")
-        abort(400)
-
+@app.post("/api/games")
+def create_game():
+    data = request.json or {}
     try:
-        handler.handle(body, signature)
-    except InvalidSignatureError as e:
-        logger.error("InvalidSignatureError: %s", e)
-        logger.error(
-            "Check that LINE_CHANNEL_SECRET (%r...) matches the channel secret in LINE Developers Console.",
-            CHANNEL_SECRET[:6],
-        )
-        abort(400)
-    except Exception as e:
-        logger.exception("Unexpected error handling webhook: %s", e)
-        abort(500)
-
-    return "OK"
+        buyin_amount = int(data.get("buyin_amount", 0))
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid buy-in amount"}), 400
+    if buyin_amount <= 0:
+        return jsonify({"error": "Buy-in amount must be positive"}), 400
+    game_name = str(data.get("game_name", "")).strip()
+    session_id = str(uuid.uuid4())
+    g.cmd_start(session_id, buyin_amount, game_name=game_name)
+    return jsonify(
+        {"session_id": session_id, "redirect": url_for("game_view", session_id=session_id)}
+    )
 
 
-@handler.add(MessageEvent, message=TextMessageContent)
-def on_message(event: MessageEvent):
-    session_id = get_session_id(event)
-    user_id = event.source.user_id
-    text = event.message.text
-
-    # Fetch display name
-    name_unavailable = False
+@app.post("/api/games/<session_id>/buy")
+def buy_in(session_id):
+    data = request.json or {}
+    player_name = str(data.get("player_name", "")).strip()
+    if not player_name:
+        return jsonify({"error": "Player name required"}), 400
     try:
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            profile = line_bot_api.get_profile(user_id)
-            user_name = profile.display_name
-    except Exception as e:
-        logger.warning("Could not fetch profile for %s: %s", user_id, e)
-        stored = g.get_stored_name(user_id)
-        if stored:
-            user_name = stored
-        else:
-            user_name = user_id
-            name_unavailable = True
+        times = max(1, int(data.get("times", 1)))
+    except (ValueError, TypeError):
+        times = 1
+    player_id = f"web:{player_name.lower()}"
+    msg = g.cmd_buyin(session_id, player_id, player_name, times)
+    state = g.get_game_state(session_id)
+    return jsonify({"message": msg, "state": state})
 
-    logger.info("session=%s user=%s text=%r", session_id, user_name, text)
-    reply = handle_text(session_id, user_id, user_name, text)
-    if not reply:
-        logger.debug("No reply generated for text=%r — ignoring", text)
-        return  # ignore unrecognised messages
 
-    if name_unavailable and parse_command(text)[0] not in ("name", "setname", "myname"):
-        reply += (
-            "\n\nℹ️ Your LINE name couldn't be read. Set a display name with:\n"
-            "name <your name>"
-        )
-
-    logger.info("Replying: %r", reply)
+@app.post("/api/games/<session_id>/checkout")
+def checkout(session_id):
+    data = request.json or {}
+    player_name = str(data.get("player_name", "")).strip()
+    if not player_name:
+        return jsonify({"error": "Player name required"}), 400
     try:
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=reply)],
-                )
-            )
-    except Exception as e:
-        logger.exception("Failed to send reply: %s", e)
+        chips = int(data.get("chips", 0))
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid chip count"}), 400
+    if chips < 0:
+        return jsonify({"error": "Chip count cannot be negative"}), 400
+
+    state = g.get_game_state(session_id)
+    if state is None:
+        return jsonify({"error": "Game not found"}), 404
+    player = next((p for p in state["players"] if p["name"].lower() == player_name.lower()), None)
+    if player is None:
+        return jsonify({"error": f"Player '{player_name}' not found"}), 404
+
+    msg = g.cmd_checkout(session_id, player["id"], player["name"], chips)
+    state = g.get_game_state(session_id)
+    return jsonify({"message": msg, "state": state})
+
+
+@app.post("/api/games/<session_id>/revise")
+def revise(session_id):
+    data = request.json or {}
+    player_name = str(data.get("player_name", "")).strip()
+    if not player_name:
+        return jsonify({"error": "Player name required"}), 400
+    try:
+        chips = int(data.get("chips", 0))
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid chip count"}), 400
+    if chips < 0:
+        return jsonify({"error": "Chip count cannot be negative"}), 400
+
+    state = g.get_game_state(session_id)
+    if state is None:
+        return jsonify({"error": "Game not found"}), 404
+    player = next((p for p in state["players"] if p["name"].lower() == player_name.lower()), None)
+    if player is None:
+        return jsonify({"error": f"Player '{player_name}' not found"}), 404
+
+    msg = g.cmd_revise(session_id, player["id"], player["name"], chips)
+    state = g.get_game_state(session_id)
+    return jsonify({"message": msg, "state": state})
+
+
+@app.post("/api/games/<session_id>/set-buyins")
+def set_buyins(session_id):
+    data = request.json or {}
+    player_name = str(data.get("player_name", "")).strip()
+    if not player_name:
+        return jsonify({"error": "Player name required"}), 400
+    try:
+        count = int(data.get("count", 0))
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid count"}), 400
+    if count <= 0:
+        return jsonify({"error": "Buy-in count must be at least 1"}), 400
+    msg = g.cmd_set_buyins(session_id, player_name, count)
+    state = g.get_game_state(session_id)
+    return jsonify({"message": msg, "state": state})
+
+
+@app.post("/api/games/<session_id>/remove")
+def remove_player(session_id):
+    data = request.json or {}
+    player_name = str(data.get("player_name", "")).strip()
+    if not player_name:
+        return jsonify({"error": "Player name required"}), 400
+    msg = g.cmd_remove(session_id, player_name)
+    state = g.get_game_state(session_id)
+    return jsonify({"message": msg, "state": state})
+
+
+@app.delete("/api/games/<session_id>")
+def delete_game(session_id):
+    g.cmd_reset(session_id)
+    return jsonify({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# Regulars
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/regulars")
+def list_regulars():
+    return jsonify(g.get_regulars())
+
+
+@app.post("/api/regulars")
+def add_regular():
+    data = request.json or {}
+    name = str(data.get("name", "")).strip()
+    if not name:
+        return jsonify({"error": "Name required"}), 400
+    g.add_regular(name)
+    return jsonify(g.get_regulars())
+
+
+@app.delete("/api/regulars/<name>")
+def remove_regular(name):
+    g.remove_regular(name)
+    return jsonify(g.get_regulars())
 
 
 if __name__ == "__main__":
+    import os
     port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=True)
