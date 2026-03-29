@@ -1,10 +1,45 @@
+import struct
 import uuid
+import zlib
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
 
 import game as g
 
+
+def _make_icon_png(size: int = 180) -> bytes:
+    """Generate a solid dark PNG for use as apple-touch-icon (no dependencies)."""
+    r, g_val, b = 0x0F, 0x11, 0x17  # #0f1117 — app background
+    raw = b"".join(b"\x00" + bytes([r, g_val, b] * size) for _ in range(size))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+_ICON_PNG = _make_icon_png()  # generated once at startup
+
 app = Flask(__name__)
+
+
+# ---------------------------------------------------------------------------
+# PWA assets
+# ---------------------------------------------------------------------------
+
+
+@app.get("/apple-touch-icon.png")
+@app.get("/apple-touch-icon-precomposed.png")
+def apple_touch_icon():
+    return Response(_ICON_PNG, mimetype="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 # ---------------------------------------------------------------------------
