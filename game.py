@@ -591,11 +591,26 @@ def rename_regular(old_name: str, new_name: str) -> None:
     new_name = new_name.strip()
     if not new_name:
         return
+    needle = old_name.lower()
     with _get_conn() as conn:
         conn.execute(
             "UPDATE regular_players SET name = ? WHERE name = ?",
             (new_name, old_name),
         )
+        # Patch every game that has this player in its players_json
+        rows = conn.execute("SELECT session_id, players_json FROM games").fetchall()
+        for session_id, players_json in rows:
+            players = json.loads(players_json)
+            updated = False
+            for data in players.values():
+                if data["name"].lower() == needle:
+                    data["name"] = new_name
+                    updated = True
+            if updated:
+                conn.execute(
+                    "UPDATE games SET players_json = ? WHERE session_id = ?",
+                    (json.dumps(players), session_id),
+                )
 
 
 def remove_regular(name: str) -> None:
