@@ -29,6 +29,42 @@
 <!-- Body -->
 <main class="max-w-5xl mx-auto px-4 sm:px-6 py-8">
 
+  {% if leaderboard %}
+  <!-- Monthly leaderboard -->
+  <section class="mb-10">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wide">
+        Monthly Leaderboard
+        <span class="ml-2 text-slate-600 font-normal normal-case text-xs" id="leaderboard-month"></span>
+      </h2>
+    </div>
+    <div class="card overflow-hidden">
+      <div class="divide-y divide-surface-border">
+        {% for p in leaderboard %}
+        {% set rank = loop.index %}
+        {% set medal = ['🥇','🥈','🥉'][rank-1] if rank <= 3 else '' %}
+        {% set net_pos = p.net >= 0 %}
+        <div class="flex items-center justify-between px-5 py-3.5">
+          <div class="flex items-center gap-3">
+            <span class="text-lg w-7 text-center select-none">{{ medal if medal else '#' ~ rank }}</span>
+            <div>
+              <p class="font-medium text-white">{{ p.name }}</p>
+              <p class="text-xs text-slate-500">
+                {{ p.games }} game{{ 's' if p.games != 1 }}
+                {% if p.wins %}&nbsp;·&nbsp;{{ p.wins }} win{{ 's' if p.wins != 1 }}{% endif %}
+              </p>
+            </div>
+          </div>
+          <p class="font-bold text-base {{ 'text-green-400' if net_pos else 'text-red-400' }}">
+            {{ '+' if net_pos else '' }}{{ p.net | int }}
+          </p>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
   {% if games %}
   <!-- Stats row -->
   <div class="flex gap-6 mb-6 text-sm">
@@ -177,6 +213,15 @@
 
 {% block scripts %}
 <script>
+  // Show current month label
+  (function() {
+    const el = document.getElementById('leaderboard-month');
+    if (el) {
+      const now = new Date();
+      el.textContent = now.toLocaleString('default', { month: 'long', year: 'numeric' });
+    }
+  })();
+
   const ADJECTIVES = ['Wild','Lucky','Midnight','Golden','Smoky','Blind','River','Royal','Dirty','Silent','Loose','Tight'];
   const NOUNS = ['Aces','Spades','Kings','Bluff','Flop','River','Sharks','Felts','Chips','Rounds','Pots','Hands'];
   function randomName() {
@@ -254,12 +299,48 @@
       return;
     }
     list.innerHTML = regulars.map(name => `
-      <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem 0.6rem; border-radius:0.5rem; background:#1a2035;">
-        <span style="font-size:0.875rem; color:#e2e8f0;">${esc(name)}</span>
+      <div style="display:flex; align-items:center; gap:0.4rem; padding:0.4rem 0.6rem; border-radius:0.5rem; background:#1a2035;">
+        <span class="regular-name" style="flex:1; font-size:0.875rem; color:#e2e8f0;">${esc(name)}</span>
+        <input class="regular-edit-input" data-original="${esc(name)}"
+               style="display:none; flex:1; font-size:0.875rem; color:#e2e8f0; background:#0f1623; border:1px solid #3a4560; border-radius:0.375rem; padding:0.15rem 0.4rem; outline:none;" />
+        <button onclick="startRename(this)" data-name="${esc(name)}" title="Rename"
+                style="color:#475569; font-size:0.85rem; background:none; border:none; cursor:pointer; padding:0 0.15rem; flex-shrink:0;"
+                onmouseover="this.style.color='#94a3b8'" onmouseout="this.style.color='#475569'">✏️</button>
         <button onclick="removeRegular('${esc(name)}')"
-                style="color:#475569; font-size:1rem; background:none; border:none; cursor:pointer; line-height:1; padding:0 0.2rem;"
+                style="color:#475569; font-size:1rem; background:none; border:none; cursor:pointer; line-height:1; padding:0 0.2rem; flex-shrink:0;"
                 onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#475569'">✕</button>
       </div>`).join('');
+  }
+
+  function startRename(btn) {
+    const row = btn.closest('div');
+    const nameSpan = row.querySelector('.regular-name');
+    const input = row.querySelector('.regular-edit-input');
+    const original = btn.dataset.name;
+    input.value = original;
+    nameSpan.style.display = 'none';
+    input.style.display = 'block';
+    input.focus();
+    input.select();
+    input.onkeydown = e => {
+      if (e.key === 'Enter') commitRename(input, original);
+      if (e.key === 'Escape') { nameSpan.style.display = 'block'; input.style.display = 'none'; }
+    };
+    input.onblur = () => commitRename(input, original);
+  }
+
+  async function commitRename(input, original) {
+    const newName = input.value.trim();
+    if (!newName || newName === original) {
+      await refreshRegularsList();
+      return;
+    }
+    await fetch(`/api/regulars/${encodeURIComponent(original)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName }),
+    });
+    await refreshRegularsList();
   }
 
   async function addRegular() {

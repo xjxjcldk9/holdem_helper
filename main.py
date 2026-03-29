@@ -15,7 +15,8 @@ app = Flask(__name__)
 @app.get("/")
 def index():
     games = g.list_games()
-    return render_template("index.html", games=games)
+    leaderboard = g.get_monthly_leaderboard()
+    return render_template("index.html", games=games, leaderboard=leaderboard)
 
 
 @app.get("/game/<session_id>")
@@ -60,6 +61,7 @@ def buy_in(session_id):
         times = 1
     player_id = f"web:{player_name.lower()}"
     msg = g.cmd_buyin(session_id, player_id, player_name, times)
+    g.add_regular(player_name)  # auto-register every player typed in
     state = g.get_game_state(session_id)
     return jsonify({"message": msg, "state": state})
 
@@ -165,6 +167,16 @@ def add_regular():
     if not name:
         return jsonify({"error": "Name required"}), 400
     g.add_regular(name)
+    return jsonify(g.get_regulars())
+
+
+@app.put("/api/regulars/<name>")
+def rename_regular(name):
+    data = request.json or {}
+    new_name = str(data.get("name", "")).strip()
+    if not new_name:
+        return jsonify({"error": "Name required"}), 400
+    g.rename_regular(name, new_name)
     return jsonify(g.get_regulars())
 
 

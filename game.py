@@ -526,6 +526,54 @@ def get_game_state(session_id: str) -> Optional[dict]:
     }
 
 
+def get_monthly_leaderboard(year_month: str = "") -> list[dict]:
+    """Returns player rankings for the given YYYY-MM month (defaults to current UTC month).
+
+    Only counts balanced completed games.
+    Each entry: {name, net, games, wins}
+    """
+    if not year_month:
+        import datetime
+        year_month = datetime.datetime.utcnow().strftime("%Y-%m")
+
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT players_json, buyin_amount FROM games WHERE created_at LIKE ?",
+            (f"{year_month}%",),
+        ).fetchall()
+
+    player_stats: dict[str, dict] = {}
+
+    for players_json, buyin_amount in rows:
+        players = json.loads(players_json)
+        if not players:
+            continue
+        all_out = all(p.get("checkout_chips") is not None for p in players.values())
+        if not all_out:
+            continue
+        total_in = sum(p["buyins"] * buyin_amount for p in players.values())
+        total_out = sum(p["checkout_chips"] for p in players.values())
+        if total_in != total_out:
+            continue
+
+        max_delta = max(
+            p["checkout_chips"] - p["buyins"] * buyin_amount for p in players.values()
+        )
+
+        for p in players.values():
+            invested = p["buyins"] * buyin_amount
+            delta = p["checkout_chips"] - invested
+            key = p["name"].lower()
+            if key not in player_stats:
+                player_stats[key] = {"name": p["name"], "net": 0, "games": 0, "wins": 0}
+            player_stats[key]["net"] += delta
+            player_stats[key]["games"] += 1
+            if delta == max_delta and delta > 0:
+                player_stats[key]["wins"] += 1
+
+    return sorted(player_stats.values(), key=lambda x: x["net"], reverse=True)
+
+
 def get_regulars() -> list[str]:
     with _get_conn() as conn:
         rows = conn.execute("SELECT name FROM regular_players ORDER BY name").fetchall()
@@ -537,6 +585,17 @@ def add_regular(name: str) -> None:
     if name:
         with _get_conn() as conn:
             conn.execute("INSERT OR IGNORE INTO regular_players (name) VALUES (?)", (name,))
+
+
+def rename_regular(old_name: str, new_name: str) -> None:
+    new_name = new_name.strip()
+    if not new_name:
+        return
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE regular_players SET name = ? WHERE name = ?",
+            (new_name, old_name),
+        )
 
 
 def remove_regular(name: str) -> None:

@@ -30,9 +30,9 @@ Game state is persisted in SQLite. On Railway, add a **Volume** mounted at `/dat
 
 Three layers:
 
-- **`game.py`** — game logic + SQLite persistence. Schema: `games` table with `session_id` (UUID), `buyin_amount`, `players_json` (JSON blob), `game_name`, `created_at`. Two helper functions for the web layer: `list_games()` and `get_game_state()`.
-- **`main.py`** — Flask web app. Serves two HTML pages (`/` dashboard, `/game/<id>` game view) and a JSON API (`/api/games`, `/api/games/<id>/buy|checkout|revise|remove`, `DELETE /api/games/<id>`).
-- **`templates/`** — Jinja2 templates with Tailwind CSS (CDN). `base.html` → `index.html` (dashboard) and `game.html` (game view).
+- **`game.py`** — game logic + SQLite persistence. Schema: `games` table with `session_id` (UUID), `buyin_amount`, `players_json` (JSON blob), `game_name`, `created_at`; `regular_players` table for saved players. Key public functions: `list_games()`, `get_game_state()`, `get_monthly_leaderboard()`, `get_regulars()`, `add_regular()`, `remove_regular()`.
+- **`main.py`** — Flask web app. Serves two HTML pages (`/` dashboard, `/game/<id>` game view) and a JSON API (`/api/games`, `/api/games/<id>/buy|checkout|revise|remove`, `DELETE /api/games/<id>`, `/api/regulars`). Every buy-in automatically calls `add_regular()` to save the player name.
+- **`templates/`** — Jinja2 templates with Tailwind CSS (CDN). `base.html` → `index.html` (dashboard with monthly leaderboard + game list) and `game.html` (game view).
 
 ### Game state model
 
